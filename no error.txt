@@ -1,0 +1,99 @@
+-- 1. Database Setup
+DROP DATABASE IF EXISTS Sales_Management_System;
+CREATE DATABASE Sales_Management_System;
+USE Sales_Management_System;
+
+-- 2. Branches Table
+CREATE TABLE branches (
+    branch_id INT AUTO_INCREMENT PRIMARY KEY,
+    branch_name VARCHAR(100) NOT NULL,
+    branch_admin_name VARCHAR(100) NOT NULL
+) ENGINE=InnoDB;
+
+-- 3. Users Table
+CREATE TABLE users (
+    user_id INT AUTO_INCREMENT PRIMARY KEY,
+    username VARCHAR(100) NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    branch_id INT,
+    role ENUM('Super Admin', 'Admin') NOT NULL,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    FOREIGN KEY (branch_id) REFERENCES branches(branch_id) ON DELETE SET NULL
+) ENGINE=InnoDB;
+
+-- 4. Customer Sales Table
+CREATE TABLE customer_sales (
+    sale_id INT AUTO_INCREMENT PRIMARY KEY,
+    branch_id INT,
+    sale_date DATE NOT NULL,
+    customer_name VARCHAR(100) NOT NULL,
+    mobile_number VARCHAR(15) NOT NULL, -- Removed UNIQUE to allow same customer multiple purchases
+    product_name VARCHAR(30),
+    gross_sales DECIMAL(12, 2) NOT NULL,
+    received_amount DECIMAL(12, 2) DEFAULT 0.00,
+    -- Virtual calculation for pending amount
+    pending_amount DECIMAL(12, 2) AS (gross_sales - received_amount) STORED,
+    status ENUM('Open', 'Close') DEFAULT 'Open',
+    FOREIGN KEY (branch_id) REFERENCES branches(branch_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 5. Payment Splits Table
+CREATE TABLE payment_splits (
+    payment_id INT AUTO_INCREMENT PRIMARY KEY,
+    sale_id INT,
+    payment_date DATE NOT NULL,
+    amount_paid DECIMAL(12, 2) NOT NULL,
+    payment_method ENUM('Cash', 'UPI', 'Card', 'Bank Transfer') NOT NULL,
+    FOREIGN KEY (sale_id) REFERENCES customer_sales(sale_id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+-- 6. Trigger for Automatic Financial Updates
+-- These maintain data integrity across Inserts, Updates, and Deletes
+DELIMITER //
+
+-- TRIGGER FOR NEW PAYMENTS
+CREATE TRIGGER after_payment_insert
+AFTER INSERT ON payment_splits
+FOR EACH ROW
+BEGIN
+    UPDATE customer_sales
+    SET received_amount = (SELECT COALESCE(SUM(amount_paid), 0) FROM payment_splits WHERE sale_id = NEW.sale_id),
+        status = IF((gross_sales - (SELECT COALESCE(SUM(amount_paid), 0) FROM payment_splits WHERE sale_id = NEW.sale_id)) <= 0, 'Close', 'Open')
+    WHERE sale_id = NEW.sale_id;
+END //
+
+-- TRIGGER FOR UPDATED PAYMENTS (e.g., fixing a payment typo)
+CREATE TRIGGER after_payment_update
+AFTER UPDATE ON payment_splits
+FOR EACH ROW
+BEGIN
+    UPDATE customer_sales
+    SET received_amount = (SELECT COALESCE(SUM(amount_paid), 0) FROM payment_splits WHERE sale_id = NEW.sale_id),
+        status = IF((gross_sales - (SELECT COALESCE(SUM(amount_paid), 0) FROM payment_splits WHERE sale_id = NEW.sale_id)) <= 0, 'Close', 'Open')
+    WHERE sale_id = NEW.sale_id;
+END //
+
+-- TRIGGER FOR DELETED PAYMENTS
+CREATE TRIGGER after_payment_delete
+AFTER DELETE ON payment_splits
+FOR EACH ROW
+BEGIN
+    UPDATE customer_sales
+    SET received_amount = (SELECT COALESCE(SUM(amount_paid), 0) FROM payment_splits WHERE sale_id = OLD.sale_id),
+        status = IF((gross_sales - (SELECT COALESCE(SUM(amount_paid), 0) FROM payment_splits WHERE sale_id = OLD.sale_id)) <= 0, 'Close', 'Open')
+    WHERE sale_id = OLD.sale_id;
+END //
+
+DELIMITER ;
+
+-- 7. Verification / Testing (Optional)
+INSERT INTO branches (branch_name, branch_admin_name) VALUES ('Main Office', 'Admin User');
+INSERT INTO customer_sales (branch_id, sale_date, customer_name, mobile_number, product_name, gross_sales) 
+VALUES (1, CURDATE(), 'Test Customer', '1234567890', 'Laptop', 1000.00);
+
+-- Adding a partial payment
+INSERT INTO payment_splits (sale_id, payment_date, amount_paid, payment_method) 
+VALUES (1, CURDATE(), 400.00, 'Cash');
+
+-- View the result
+SELECT * FROM customer_sales;
